@@ -6,6 +6,19 @@
   "license": "MIT",
   "devDependencies": {
     "@babel/cli": "^7.2.3",
-    "@babel/core": "^7.2.2"
+    "@babel/core": "^7.2.2",
+    "@babel/node": "^7.2.2",
+    "@babel/preset-env": "^7.3.1",
+    "babel-jest": "^23.6.0",
+    "jest": "^23.6.0"
+  },
+  "dependencies": {
+    "lodash": "^4.17.11",
+    "monotonic-timestamp": "^0.0.9",
+    "uuid": "^3.3.2",
+    "ws": "^6.1.2"
+  },
+  "scripts": {
+  	"connect-test": "babel-node src/connect_test.js"
   }
 }
