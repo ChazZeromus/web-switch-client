@@ -1,0 +1,11 @@
+{
+  "name": "web-switch-client",
+  "version": "0.0.1",
+  "description": "JS client for web-switch python websocket server",
+  "main": "index.js",
+  "license": "MIT",
+  "devDependencies": {
+    "@babel/cli": "^7.2.3",
+    "@babel/core": "^7.2.2"
+  }
+}
