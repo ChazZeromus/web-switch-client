@@ -1,3 +1,4 @@
+// @flow
 import WebSocket from 'ws';
 import _ from 'lodash';
 import EventEmitter from 'events';
@@ -5,29 +6,31 @@ import MonotonicNow from 'monotonic-timestamp';
 import uuidv4 from 'uuid/v4';
 
 export default class Client extends EventEmitter {
-    constructor(url, socketCreator = null) {
+    ws: WebSocket;
+    constructor(url: string | () => string, socketCreator: ?(string) => WebSocket = null) {
         super();
 
         this.ws = null;
 
-        let _url;
+        let _url: string;
 
-        if (_.isString(url)) {
+        if (typeof url === 'string') {
             _url = url;
         }
-        else if (_.isFunction(url)) {
+        else if (typeof url === 'function') {
             _url = url();
         }
         else {
             throw new Error('Url parameter must be string or function');
         }
 
-        this.ws = _.isFunction(socketCreator) ? socketCreator(_url) : new WebSocket(_url);
+        this.ws = socketCreator ? socketCreator(_url) : new WebSocket(_url);
 
         this.ws.addEventListener('message', this.handleMessage.bind(this));
         this.ws.addEventListener('open', this.handleOpen.bind(this));
         this.ws.addEventListener('close', this.handleClose.bind(this));
         this.ws.addEventListener('error', this.handleError.bind(this));
+
         this.convos = {};
         this.queues = {};
     }
