@@ -1,4 +1,6 @@
-import Client, { timeboxPromise } from './client';
+// @flow
+import Client from './client';
+import * as Utils from './utils';
 
 
 const URL = 'ws://localhost:8765';
