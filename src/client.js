@@ -1,15 +1,23 @@
 // @flow
 import WebSocket from 'ws';
+import type { MessageEvent } from 'ws';
 import _ from 'lodash';
-import EventEmitter from 'events';
+import EventEmitter from 'event-emitter-es6';
 import MonotonicNow from 'monotonic-timestamp';
 import uuidv4 from 'uuid/v4';
 
-export default class Client extends EventEmitter {
-    ws: WebSocket;
-    constructor(url: string | () => string, socketCreator: ?(string) => WebSocket = null) {
-        super();
+import * as Utils from './utils';
 
+type DataQueue = AsyncQueue<string>;
+
+export default class Client {
+    emitter: EventEmitter = new EventEmitter({ emitDelay: 0});
+    ws: WebSocket;
+    convos: Map<string, Convo> = new Map();
+    queues: Map<string, DataQueue> = new Map();
+
+    // TODO: Make construction here less akward
+    constructor(url: string | () => string, socketCreator: ?(string) => WebSocket = null) {
         this.ws = null;
 
         let _url: string;
@@ -30,46 +38,46 @@ export default class Client extends EventEmitter {
         this.ws.addEventListener('open', this.handleOpen.bind(this));
         this.ws.addEventListener('close', this.handleClose.bind(this));
         this.ws.addEventListener('error', this.handleError.bind(this));
-
-        this.convos = {};
-        this.queues = {};
     }
 
-    handleOpen(data) {
+    handleOpen(event: Event) {
         console.info('Connection socket opened, state:', this.ws.readyState);
-        this.emit('open', data);
+        this.emitter.emit('open', event);
     }
 
-    handleError(data) {
+    handleError(event: Event) {
         console.error('Connection socket error occurred');
-        this.emit('error', data);
+        this.emitter.emit('error', event);
     }
 
-    handleClose(data) {
+    handleClose(event: Event) {
         // console.info('Connection Socket closed', data);
-        this.emit('close', data);
+        this.emitter.emit('close', event);
     }
 
-    handleMessage(data) {
+    handleMessage(event: MessageEvent) {
         // this.emit('message', data);
-        this._parseMessage(data.data);
+        this._parseMessage(event.data);
     }
 
-    static _extract_guid(obj) {
+    static _extract_guid(obj: Object) {
         return _.get(obj, 'response_id', null) || _.get(obj, 'error_data.response_id', null);
     }
 
-    _parseMessage(data) {
+    _parseMessage(data: string) {
         try {
             const obj = JSON.parse(data);
+            if (typeof obj !== 'object') {
+                throw new Error(`Expecting object not "${JSON.stringify(obj)}"`)
+            }
             const guid = Client._extract_guid(obj);
 
-            const convo = this.convos[guid] || null;
+            const convo: ?Convo = this.convos.get(guid) || null;
 
-            let queue = this.queues[guid];
+            let queue = this.queues.get(guid);
 
             if (!queue) {
-                this.queues[guid] = queue = new AsyncQueue();
+                this.queues.set(guid, queue = new AsyncQueue());
             }
 
             queue.put(obj);
@@ -79,17 +87,17 @@ export default class Client extends EventEmitter {
         }
     }
 
-    async getMessageAsync(guid) {
-        let queue = this.queues[guid];
+    async getMessageAsync(guid: string) {
+        let queue: ?DataQueue = this.queues.get(guid);
 
         if (!queue) {
-            this.queues[guid] = queue = new AsyncQueue();
+            this.queues.set(guid, queue = new AsyncQueue());
         }
 
         return queue.getAsync();
     }
 
-    async send(data, timeout=2000) {
+    async send(data: Object, timeout: number=2000) {
         const json = JSON.stringify(data);
         const state = this.ws.readyState;
 
@@ -116,11 +124,11 @@ export default class Client extends EventEmitter {
         return this.ws.send(json);
     }
 
-    async convo(actionName, asyncAction) {
+    async convo(actionName: string, asyncAction: (Convo, string) => Promise<void>) {
         const guid = uuidv4();
         const convo = new Convo(this, actionName, guid);
 
-        this.convos[convo] = convo;
+        this.convos.set(guid, convo);
 
         const maybePromise = asyncAction(convo, guid);
 
@@ -136,94 +144,93 @@ export default class Client extends EventEmitter {
             throw e;
         }
         finally {
-            delete this.convos[convo];
+            this.convos.delete(guid);
+            const queue: ?DataQueue = this.queues.get(guid);
 
-            if (guid in this.queues) {
-                const queue = this.queues[guid];
+            if (queue) {
                 queue.close();
-                delete this.queues[guid];
+                this.queues.delete(guid);
             }
         }
     }
 
-    async close(code=1000, reason='') {
+    async close(code:number = 1000, reason: string = '') {
         return this.ws.close(code, reason);
     }
 
-    wait(event, timeout) {
-        let onEvent = null;
+    wait(eventName: string, timeout: number) : Promise<any> {
+        let unsub: ?() => void = null;
 
-        return timeboxPromise(new Promise((resolve, reject) => {
-                onEvent = data => resolve(data);
-                this.once(event, onEvent);
+        return Utils.timeboxPromise(new Promise((resolve, reject) => {
+                unsub = this.emitter.once(eventName, resolve);
             }),
             timeout,
             () => {
-                if (onEvent) {
-                    this.off(event, onEvent)
+                if (unsub) {
+                    unsub();
                 }
             }
         );
     }
 }
 
-export class AsyncQueue {
-    constructor() {
-        this._resolve = null;
-        this.items = [];
-    }
+export class AsyncQueue<T> {
+    _deferred: ?Utils.Deferred<T> = null;
+    _items: Array<T> = [];
 
-    put(data) {
-        if (this._resolve) {
-            this._resolve(data);
-            this._resolve = null;
-            this._reject = null;
+    put(data: T) {
+        if (this._deferred) {
+            this._deferred.resolve(data);
+            this._deferred = null;
         } else {
-            this.items.push(data);
+            this._items.push(data);
         }
     }
 
     close() {
-        if (this._reject) {
-            this._reject(new Error('AsyncQueue closing'));
-            this._reject = null;
-            this._resolve = null;
+        if (this._deferred) {
+            this._deferred.reject(new Error('AsyncQueue closing'));
+            this._deferred = null;
         }
     }
 
     async getAsync() {
-        if (this._resolve !== null) {
+        if (this._deferred !== null) {
             throw new Error('AsyncQueue.get() already blocking');
         }
 
-        if (this.items.length > 0) {
-            return this.items.shift();
+        if (this._items.length > 0) {
+            return this._items.shift();
         }
 
-        return new Promise((resolve, reject) => {
-            this._resolve = resolve;
-            this._reject = reject;
-        });
+        this._deferred = Utils.createDeferred();
+
+        return this._deferred.promise;
     }
 
     get length() {
-        return this.items.length;
+        return this._items.length;
     }
 }
 
 export class Convo {
-    constructor(client, action, guid) {
+    client: Client;
+    guid: string;
+    action: string;
+    startTimestamp: number;
+
+    constructor(client: Client, action: string, guid: string) {
         this.client         = client;
         this.guid           = guid;
         this.action         = action;
         this.startTimestamp = MonotonicNow();
     }
 
-    async expect(timeout=5000.0) {
-        return timeboxPromise(this.client.getMessageAsync(this.guid), timeout);
+    async expect(timeout: number = 5000.0) {
+        return Utils.timeboxPromise(this.client.getMessageAsync(this.guid), timeout);
     }
 
-    async send(data) {
+    async send(data: Object) {
         return this.client.send({
             ...data,
             action: this.action,
@@ -231,40 +238,8 @@ export class Convo {
         });
     }
 
-    async sendAndExpect(data, timeout=5000.0) {
+    async sendAndExpect(data: Object, timeout: number = 5000.0) {
         await this.send(data);
         return this.expect(timeout);
     }
-}
-
-export function timeboxPromise(promise, timeout, onTimeout=null) {
-    if (!promise instanceof Promise) {
-        throw new Error('Argument must be a promise');
-    }
-
-    return new Promise((resolve, reject) => {
-        const timeoutCallback = () => {
-            if (_.isFunction(onTimeout)) {
-                onTimeout();
-            }
-
-            reject(new Error('Promise did not resolve in time'));
-        };
-
-        const cancelTimeout = () => {
-            clearTimeout(timeoutId);
-        };
-
-        const catchCallback = data => {
-            clearTimeout();
-            reject(data);
-        };
-
-        const timeoutId = setTimeout(timeoutCallback, timeout);
-
-        promise.then(data => {
-            cancelTimeout();
-            resolve(promise);
-        }).catch(catchCallback);
-    });
 }

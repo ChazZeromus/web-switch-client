@@ -1,5 +1,31 @@
-import Client, { timeboxPromise, AsyncQueue, Convo } from './client';
+// @flow
 import WebSocket from 'ws'
+import Client, { AsyncQueue, Convo } from './client';
+import * as Utils from './utils';
+
+async function expectThrow(
+    asyncFunc: Promise<any>,
+    matchers: {instanceOf?: Class<*>, matches?: RegExp} = {}
+) : Promise<void> {
+    let error: any = null;
+
+    try {
+        await asyncFunc;
+        expect(false).toBe('To have thrown something');
+    }
+    catch (e) {
+        error = e;
+    }
+
+    expect(error).toBeTruthy();
+
+    if (matchers.instanceOf) {
+        expect(error instanceof matchers.instanceOf).toBe(true);
+    }
+    if (matchers.matches) {
+        expect(matchers.matches.test(String(error))).toBeTruthy();
+    }
+}
 
 function timeoutPromise(resolveValue, time) {
     return new Promise(resolve => setTimeout(() => resolve(resolveValue), time));
@@ -10,15 +36,13 @@ async function sleep(time) {
 }
 
 class MockClient {
-    constructor() {
-        this.sends = [];
-        this.gets = [];
-        this._getMessageAsync = async guid => {
-            return this.gets.shift();
-        };
-        this.getMessageAsync = this._getMessageAsync;
+    sends: Array<string> = [];
+    gets: Array<string> = [];
+    getMessageAsync: (guid: string) => Promise<?string>;
+    send: (data: string) => void;
 
-        this._send = data => this.sends.push(data);
+    constructor() {
+        this.getMessageAsync = this._getMessageAsync;
         this.send = this._send;
     }
 
@@ -28,15 +52,26 @@ class MockClient {
         this.getMessageAsync = this._getMessageAsync;
         this.send = this._send;
     }
+
+    _getMessageAsync: string => Promise<string> = async (guid: string) => {
+        return this.gets.shift();
+    };
+
+    _send: string => void = (data: string) => {
+        this.sends.push(data);
+    }
 }
 
 describe('timeboxPromise', () => {
     it('times out', async () => {
-        await expect(timeboxPromise(timeoutPromise('yo', 200), 180)).rejects.toThrow(/^Promise did not resolve/);
+        await expectThrow(
+            Utils.timeboxPromise(timeoutPromise('yo', 200), 180),
+            { instanceOf: Utils.TimeboxTimeout }
+        );
     });
 
     it('resolves in time', async () => {
-        await expect(timeboxPromise(timeoutPromise('yo', 180), 200)).resolves.toBe('yo');
+        await expect(Utils.timeboxPromise(timeoutPromise('yo', 180), 200)).resolves.toBe('yo');
     });
 });
 
@@ -114,9 +149,12 @@ describe('AsyncQueue', () => {
         expect(await queue.getAsync()).toBe(items[0]);
         expect(await queue.getAsync()).toBe(items[1]);
 
-        await expect(timeboxPromise((async () => {
-            expect(await queue.getAsync()).toBe(items[2]);
-        })(), 45)).rejects.toThrow(/^Promise did not resolve/);
+        await expectThrow(
+            Utils.timeboxPromise((async () => {
+                expect(await queue.getAsync()).toBe(items[2]);
+            })(), 45),
+            { instanceOf: Utils.TimeboxTimeout },
+        );
     });
 });
 
@@ -128,7 +166,7 @@ describe('Convo', () => {
     beforeEach(() => client.reset());
 
     it('sends and expects a message successfully', async () => {
-        const convo = new Convo(client, 'test_action', uuid);
+        const convo = new Convo((client: any), 'test_action', uuid);
 
         client.gets.push('hello');
 
@@ -146,7 +184,7 @@ describe('Convo', () => {
     });
 
     it('times out on an expect', async () => {
-        const convo = new Convo(client, 'test_action', uuid);
+        const convo = new Convo((client: any), 'test_action', uuid);
 
         client.gets.push('not suppose to get this');
 
@@ -155,16 +193,23 @@ describe('Convo', () => {
             return null;
         };
 
-        await expect(convo.sendAndExpect({msg: 'hey'}, 50)).rejects.toThrow(/^Promise did not resolve/);
+        await expectThrow(convo.sendAndExpect({msg: 'hey'}, 50), {
+            instanceOf: Utils.TimeboxTimeout
+        });
     });
 });
 
 describe('Client', () => {
 
     class MockSocket {
-        constructor(url) {
-            this.sends = [];
+        sends: Array<string> = [];
+        onmessage: (Object) => void;
+        onopen: (Object) => void;
+        onclose: (Object) => void;
+        onerror: (Object) => void;
+        readyState: string;
 
+        constructor(url) {
             const notImpl = () => { throw new Error('Not implemented'); };
 
             this.onmessage = notImpl;
@@ -175,14 +220,16 @@ describe('Client', () => {
         }
 
         send(data) {
+            console.log('Mock socket send():', data);
             this.sends.push(data);
         }
 
         addEventListener(event, fn) {
-            this[`on${event}`] = fn;
+            (this: any)[`on${event}`] = fn;
         }
 
         mockServerSend(data) {
+            console.log('mockServerSend():', data);
             this.onmessage({data});
         }
 
@@ -212,7 +259,7 @@ describe('Client', () => {
         const mockSocket = new MockSocket();
         const client = new Client('whatever', () => mockSocket);
 
-        const promise = timeboxPromise(
+        const promise = Utils.timeboxPromise(
             (async () => {
                 const data = {data: 'yo'};
 
@@ -239,7 +286,7 @@ describe('Client', () => {
 
             mockSocket.mockConnect();
 
-            promise = convo.sendAndExpect(data, 20);
+            promise = convo.sendAndExpect(data, 200);
 
             // Wait a while to so we get the hey
             await sleep(5);
