@@ -10,6 +10,13 @@ import * as Utils from './utils';
 
 type DataQueue = AsyncQueue<string>;
 
+const WS_STATE = {
+    CONNECTING: 0,
+    OPEN: 1,
+    CLOSING: 2,
+    CLOSED: 3,
+};
+
 export default class Client {
     emitter: EventEmitter = new EventEmitter({ emitDelay: 0});
     ws: WebSocket;
@@ -102,17 +109,17 @@ export default class Client {
         const state = this.ws.readyState;
 
         switch (state) {
-            case WebSocket.CONNECTING:
+            case WS_STATE.CONNECTING:
                 console.log('Socket still opening, waiting to send', data);
 
                 await this.wait('open', timeout).catch(data => { throw new Error(data); });
                 break;
 
-            case WebSocket.OPEN:
+            case WS_STATE.OPEN:
                 break;
 
-            case WebSocket.CLOSED:
-            case WebSocket.CLOSING:
+            case WS_STATE.CLOSED:
+            case WS_STATE.CLOSING:
                 throw new Error('Socket is closing or closed!');
 
             default:
