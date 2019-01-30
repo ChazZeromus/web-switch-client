@@ -1,6 +1,6 @@
 {
   "name": "web-switch-client",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "JS client for web-switch python websocket server",
   "main": "src/client.js",
   "license": "MIT",
